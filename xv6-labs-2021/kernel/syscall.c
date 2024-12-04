@@ -106,6 +106,8 @@ extern uint64 sys_write(void);
 extern uint64 sys_uptime(void);
 extern uint64 sys_trace(void);
 extern uint64 sys_sysinfo(void);
+extern uint64 sys_sigalarm(void);
+extern uint64 sys_sigreturn(void);
 
 static uint64 (*syscalls[])(void) = {
 [SYS_fork]    sys_fork,
@@ -130,7 +132,9 @@ static uint64 (*syscalls[])(void) = {
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
 [SYS_trace]   sys_trace,
-[SYS_sysinfo] sys_sysinfo
+[SYS_sysinfo] sys_sysinfo,
+[SYS_sigalarm]  sys_sigalarm,
+[SYS_sigreturn] sys_sigreturn
 };
 
 static char *syscalls_name[] = {
