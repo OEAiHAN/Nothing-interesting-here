@@ -17,6 +17,7 @@ struct spinlock pid_lock;
 
 extern void forkret(void);
 static void freeproc(struct proc *p);
+void proc_freekpt(pagetable_t kernelpt);
 
 extern char trampoline[]; // trampoline.S
 
@@ -49,11 +50,8 @@ procinit(void)
   struct proc *p;
   
   initlock(&pid_lock, "nextpid");
-  initlock(&wait_lock, "wait_lock");
-  for(p = proc; p < &proc[NPROC]; p++) {
+  for(p = proc; p < &proc[NPROC]; p++)
       initlock(&p->lock, "proc");
-      p->kstack = KSTACK((int) (p - proc));
-  }
 }
 
 // Must be called with interrupts disabled,
@@ -134,6 +132,25 @@ found:
     release(&p->lock);
     return 0;
   }
+  
+  // Initialize the kernel page table
+  p->kernelpt = proc_kpt_init();
+  if (!(p->kernelpt))
+  {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  
+  // Allocate a page for the process's kernel stack.
+  // Map it high in memory, followed by an invalid
+  // guard page.
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int) (p - proc));
+  kvmmap(p->kernelpt, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -153,6 +170,12 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  
+  uvmunmap(p->kernelpt, p->kstack, 1, 1);
+  p->kstack = 0;
+  proc_freekpt(p->kernelpt);
+  p->kernelpt = 0;
+  
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
@@ -164,6 +187,25 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+}
+
+void
+proc_freekpt(pagetable_t kernelpt)
+{
+  for(int i = 0; i < 512; i++)
+  {
+    pte_t p = kernelpt[i];
+    if(p & PTE_V)
+    {
+      kernelpt[i] = 0;
+      if (!(p & (PTE_R | PTE_W | PTE_X)))
+      {
+        uint64 v = PTE2PA(p);
+        proc_freekpt((pagetable_t)v);
+      }
+    }
+  }
+  kfree((void*)kernelpt);
 }
 
 // Create a user page table for a given process,
@@ -234,6 +276,8 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+  
+  u2kvmcopy(p->pagetable, p->kernelpt, 0, PGSIZE);
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -257,9 +301,16 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
+  
+    if (PGROUNDUP(sz + n) >= PLIC)
+    	return -1;
+  
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    
+    u2kvmcopy(p->pagetable, p->kernelpt, sz - n, sz);
+    
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
@@ -288,7 +339,8 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
-  
+
+  u2kvmcopy(np->pagetable, np->kernelpt, 0, np->sz);  
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -457,7 +509,15 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        
+        // Store the kernal page table into the SATP
+        w_satp(MAKE_SATP(p->kernelpt));
+        sfence_vma();
+		
         swtch(&c->context, &p->context);
+        
+	// Come back to the global kernel page table
+	kvminithart();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.

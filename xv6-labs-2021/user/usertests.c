@@ -2881,7 +2881,7 @@ main(int argc, char *argv[])
     {iref, "iref"},
     {forktest, "forktest"},
     {bigdir, "bigdir"}, // slow
-    { 0, 0},
+    {0, 0},
   };
 
   if(continuous){
